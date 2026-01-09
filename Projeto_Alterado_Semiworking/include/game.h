@@ -20,6 +20,5 @@ typedef struct {
 void* pacman_thread(void *arg);
 void* ghost_thread(void *arg);
 
-extern int thread_shutdown;
 
 #endif

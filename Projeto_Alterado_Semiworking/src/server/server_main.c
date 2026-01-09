@@ -129,7 +129,7 @@ void ServerBoardThread(session_t *session, int victory, int game_over){
 
 void* board_updates(void *arg){
     session_t *session = arg;
-    while(session->active){
+    while (1) {
         sleep_ms(session->board->tempo);
         if(session->active)
         ServerBoardThread(session, 0, 0);
