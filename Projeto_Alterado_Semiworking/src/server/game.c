@@ -23,12 +23,12 @@ void* pacman_thread(void *arg) {
     pacman_t* pacman = &board->pacmans[0];
 
     int *retval = malloc(sizeof(int));
-
-    while (1) {
+    *retval= CONTINUE_PLAY;
+    while (session->active) {
         if(!pacman->alive) {
+            system("clear");
             return (void*) retval;
         }
-
         sleep_ms(board->tempo * (1 + pacman->passo));
 
     if (pacman->n_moves == 0) {
@@ -56,6 +56,7 @@ void* pacman_thread(void *arg) {
         }
 
     }
+    system("clear");
     return (void*) retval;
 }
 
