@@ -14,7 +14,7 @@
 #include <fcntl.h>
 #include "sessions.h"
 
-
+//a
 // tem de se fazer uma funçao para o write para ele esperar os bites
 ssize_t read_exact(int fd, void *buf, size_t n) {
     size_t total = 0;
