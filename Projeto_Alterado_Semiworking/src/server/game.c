@@ -20,7 +20,6 @@ typedef struct {
     int ghost_index;
 } ghost_thread_arg_t;
 
-int thread_shutdown = 0;
 
 void* pacman_thread(void *arg) {
     session_t *session= arg;
@@ -78,7 +77,7 @@ void* ghost_thread(void *arg) {
         sleep_ms(board->tempo * (1 + ghost->passo));
 
         pthread_rwlock_rdlock(&board->state_lock);
-        if (thread_shutdown) {
+        if (board->thread_shutdown) {
             pthread_rwlock_unlock(&board->state_lock);
             pthread_exit(NULL);
         }
