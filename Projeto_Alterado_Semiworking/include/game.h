@@ -13,6 +13,7 @@
 typedef struct {
     board_t *board;
     int ghost_index;
+    int *shutdown_flag;
 } ghost_thread_arg_t;
 
 // If you want pacman_thread to work with board_t directly:
