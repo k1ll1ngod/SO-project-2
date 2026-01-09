@@ -280,7 +280,7 @@ void* session_worker(void* arg) {
                          pthread_create(&board_thread, NULL, board_updates, &session);
                     }
                 }
-                
+                 
                 unload_level(&game_board);
                 free(namelist[k]);
             }

@@ -26,7 +26,6 @@ void* pacman_thread(void *arg) {
     *retval= CONTINUE_PLAY;
     while (session->active) {
         if(!pacman->alive) {
-            system("clear");
             return (void*) retval;
         }
         sleep_ms(board->tempo * (1 + pacman->passo));
@@ -56,7 +55,6 @@ void* pacman_thread(void *arg) {
         }
 
     }
-    system("clear");
     return (void*) retval;
 }
 
