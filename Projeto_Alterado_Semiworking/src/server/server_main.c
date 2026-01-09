@@ -133,6 +133,7 @@ void* board_updates(void *arg){
         sleep_ms(session->board->tempo);
         if(session->active)
         ServerBoardThread(session, 0, 0);
+        else break;
     }
     return NULL;
 }
@@ -190,7 +191,6 @@ void* session_worker(void* arg) {
         // Use scandir to get levels so each thread iterates independently
         struct dirent **namelist;
         int n_levels = scandir(global_levels_dir, &namelist, NULL, alphasort);
-
         if (n_levels < 0) {
             perror("scandir");
         } else {
@@ -269,6 +269,8 @@ void* session_worker(void* arg) {
                         end_game = true;
                         break;
                     }
+                    if(result == CONTINUE_PLAY)
+                        continue;
 
                     // If continue play (e.g. lost life but not game over), update points
                     accumulated_points = game_board.pacmans[0].points;
@@ -278,7 +280,7 @@ void* session_worker(void* arg) {
                          pthread_create(&board_thread, NULL, board_updates, &session);
                     }
                 }
-                
+                 
                 unload_level(&game_board);
                 free(namelist[k]);
             }
