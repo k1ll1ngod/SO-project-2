@@ -107,9 +107,16 @@ void ServerBoardThread(session_t *session){
 
 void* board_updates(void *arg){
     session_t *session = arg;
-    while(session->active){
+    while (1) {
         sleep_ms(session->board->tempo);
-        if(session->active)
+
+        pthread_rwlock_rdlock(&session->board->state_lock);
+        if (session->board->thread_shutdown) {
+            pthread_rwlock_unlock(&session->board->state_lock);
+            break;
+        }
+        pthread_rwlock_unlock(&session->board->state_lock);
+
         ServerBoardThread(session);
     }
     return NULL;
@@ -196,11 +203,15 @@ int main(int argc, char** argv) {
             ServerBoardThread(&session);
             session.active=1;
 
+            pthread_rwlock_wrlock(&game_board.state_lock);
+            game_board.thread_shutdown = 0;
+            pthread_rwlock_unlock(&game_board.state_lock);
+
             pthread_t board_thread;
             pthread_create(&board_thread, NULL, board_updates, &session);
 
             while(1) {
-
+ 
                 pthread_t pacman_tid;
                 pthread_t *ghost_tids = malloc(game_board.n_ghosts * sizeof(pthread_t));
 
@@ -216,7 +227,7 @@ int main(int argc, char** argv) {
                 pthread_join(pacman_tid, (void**)&retval);
 
                 pthread_rwlock_wrlock(&game_board.state_lock);
-                thread_shutdown = 1;
+                game_board.thread_shutdown = 1;
                 pthread_rwlock_unlock(&game_board.state_lock);
 
                 for (int i = 0; i < game_board.n_ghosts; i++) {
