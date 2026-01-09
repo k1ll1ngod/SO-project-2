@@ -14,7 +14,6 @@
 #include <fcntl.h>
 #include "sessions.h"
 
-
 // tem de se fazer uma funçao para o write para ele esperar os bites
 ssize_t read_exact(int fd, void *buf, size_t n) {
     size_t total = 0;
@@ -230,6 +229,7 @@ int main(int argc, char** argv) {
                 free(retval);
 
                 if(result == NEXT_LEVEL) {
+                    accumulated_points = game_board.pacmans[0].points;
                     sleep_ms(game_board.tempo);
                     break;
                 }
