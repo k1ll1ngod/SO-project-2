@@ -1,4 +1,5 @@
 #include "board.h"
+#include "game.h"
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -14,12 +15,6 @@
 #define QUIT_GAME 2
 #define LOAD_BACKUP 3
 #define CREATE_BACKUP 4
-
-typedef struct {
-    board_t *board;
-    int ghost_index;
-} ghost_thread_arg_t;
-
 
 void* pacman_thread(void *arg) {
     session_t *session= arg;
@@ -68,6 +63,7 @@ void* ghost_thread(void *arg) {
     ghost_thread_arg_t *ghost_arg = (ghost_thread_arg_t*) arg;
     board_t *board = ghost_arg->board;
     int ghost_ind = ghost_arg->ghost_index;
+    int *shutdown = ghost_arg->shutdown_flag;
 
     free(ghost_arg);
 
@@ -77,7 +73,7 @@ void* ghost_thread(void *arg) {
         sleep_ms(board->tempo * (1 + ghost->passo));
 
         pthread_rwlock_rdlock(&board->state_lock);
-        if (board->thread_shutdown) {
+        if (*shutdown) {
             pthread_rwlock_unlock(&board->state_lock);
             pthread_exit(NULL);
         }
