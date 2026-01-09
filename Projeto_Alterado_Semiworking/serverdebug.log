@@ -1,0 +1,37 @@
+DIM = 6 x 6
+TEMPO = 100
+MON file: /home/joao/SO/Projeto 2/SO-Project-2/Projeto/SO-2526-sol-parte1/2.m
+Line: XXXXXX
+Line: XooooX
+Line: XooooX
+Line: XooooX
+Line: Xooo@X
+Line: XXXXXX
+Ghost passo: 1
+Ghost Pos = 3 x 3
+DIM = 7 x 7
+TEMPO = 100
+MON file: /home/joao/SO/Projeto 2/SO-Project-2/Projeto/SO-2526-sol-parte1/1.m
+Line: XXoXXXo
+Line: XooooXo
+Line: XooooXo
+Line: Xooo@Xo
+Line: XooooXo
+Line: XoooooX
+Line: XXXXXXX
+Ghost passo: 1
+Ghost Pos = 4 x 1
+DIM = 10 x 6
+TEMPO = 100
+MON file: /home/joao/SO/Projeto 2/SO-Project-2/Projeto/SO-2526-sol-parte1/2.m
+MON file: /home/joao/SO/Projeto 2/SO-Project-2/Projeto/SO-2526-sol-parte1/3.m
+Line: XXXXXXXXXX
+Line: Xoo@oooooX
+Line: XooooooooX
+Line: XooooooooX
+Line: XooooooooX
+Line: XXXXXXXXXX
+Ghost passo: 1
+Ghost Pos = 3 x 3
+Ghost passo: 1
+Ghost Pos = 3 x 2
