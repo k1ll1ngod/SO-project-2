@@ -25,16 +25,23 @@ void* pacman_thread(void *arg) {
     int *retval = malloc(sizeof(int));
     *retval= CONTINUE_PLAY;
     while (session->active) {
-        if(!pacman->alive) {
+        // Check if Pacman died (killed by ghost or any other reason)
+        pthread_rwlock_rdlock(&board->state_lock);
+        int is_alive = pacman->alive;
+        pthread_rwlock_unlock(&board->state_lock);
+        
+        if(!is_alive) {
+            *retval = QUIT_GAME;
             return (void*) retval;
         }
+        
         sleep_ms(board->tempo * (1 + pacman->passo));
 
-    if (pacman->n_moves == 0) {
-        continue;   // ou sleep e continua
-    }
+        if (pacman->n_moves == 0) {
+            continue;
+        }
 
-    command_t *play = &pacman->moves[pacman->current_move % pacman->n_moves];
+        command_t *play = &pacman->moves[pacman->current_move % pacman->n_moves];
 
         pthread_rwlock_wrlock(&board->state_lock);
 
@@ -45,15 +52,13 @@ void* pacman_thread(void *arg) {
 
         if (result == REACHED_PORTAL) {
             *retval=NEXT_LEVEL;
-            return retval;
+            return (void*) retval;
         }
 
         if(result == DEAD_PACMAN) {
             *retval = QUIT_GAME;
-            // Restart from child, wait for child, then quit
-            break;
+            return (void*) retval;
         }
-
     }
     return (void*) retval;
 }

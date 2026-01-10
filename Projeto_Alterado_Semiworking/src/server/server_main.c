@@ -66,11 +66,23 @@ ssize_t read_exact(int fd, void *buf, size_t n) {
 }
 
 int extractIdFromPipe (const char *pipe_path) {
-  const char *last_underscore = strrchr(pipe_path, '_');
-  if (last_underscore) {
-      return atoi(last_underscore + 1);
-  }
-  return -1;
+    int id = -1;
+      const char *last_underscore = strrchr(pipe_path, '_');
+      if (last_underscore) {
+          id = atoi(last_underscore + 1);
+      }
+      // Fallback: If ID is invalid (0 or -1), try to find ANY number in the string
+      if (id <= 0) {
+          const char *p = pipe_path;
+          while (*p) {
+              if (*p >= '0' && *p <= '9') {
+                  id = atoi(p);
+                  break;
+              }
+              p++;
+          }
+      }
+      return id;
 }
 
 void* ClientSessionThread(void *arg){
@@ -160,12 +172,12 @@ void* board_updates(void *arg){
         sleep_ms(session->board->tempo);
         pthread_rwlock_rdlock(&session->board->state_lock);
         if(session->board->thread_shutdown || !session->active){
+            pthread_rwlock_unlock(&session->board->state_lock);  // IMPORTANT: unlock before breaking
             break;
         }
         pthread_rwlock_unlock(&session->board->state_lock);
         ServerBoardThread(session, 0, 0);
     }
-    pthread_rwlock_unlock(&session->board->state_lock);
     return NULL;
 }
 
@@ -179,10 +191,12 @@ void add_session(session_t *session, int client_id){
     }
     pthread_mutex_unlock(&sessions_mutex);
 }
-void remove_session(int client_id){
+
+void remove_session(session_t *session_ptr){
     pthread_mutex_lock(&sessions_mutex);
     for(int i=0; i<num_active_sessions;i++){
-        if (active_sessions[i].client_id == client_id) {
+        // Compare memory address, not ID, to avoid collisions when ID=0
+        if (active_sessions[i].session == session_ptr) {
             active_sessions[i] = active_sessions[num_active_sessions - 1];
             num_active_sessions--;
             break;
@@ -194,7 +208,8 @@ void remove_session(int client_id){
 void create_top5(){
     FILE *fp = fopen("Top_5.txt","w");
     if(!fp)return;
-    
+
+    // Header styling
     fprintf(fp, "+------+--------+--------+\n");
     fprintf(fp, "|        TOP  5          |\n");
     fprintf(fp, "+------+--------+--------+\n");
@@ -204,15 +219,19 @@ void create_top5(){
     pthread_mutex_lock(&sessions_mutex);
     
     typedef struct { int id; int points; } top_entry_t;
+    
+    // Safer allocation than VLA for variable sizes
     int count = num_active_sessions;
     top_entry_t *entries = NULL;
     if (count > 0) {
         entries = malloc(count * sizeof(top_entry_t));
     }
+    
     if (entries) {
         for (int i = 0; i < count; i++) {
             entries[i].id = active_sessions[i].client_id;
             entries[i].points = 0;
+            
             session_t *sess = active_sessions[i].session;
             if (sess && sess->board) {
                 // Must lock the board to safely read pacman pointer and points
@@ -224,22 +243,21 @@ void create_top5(){
                 pthread_rwlock_unlock(&sess->board->state_lock);
             }
         }
-    }
 
-    // Bubble sort
-    for (int i = 0; i < count - 1; i++) {
-        for (int j = 0; j < count - i - 1; j++) {
-            if (entries[j].points < entries[j+1].points) {
-                top_entry_t temp = entries[j];
-                entries[j] = entries[j+1];
-                entries[j+1] = temp;
+        // Bubble sort descending
+        for (int i = 0; i < count - 1; i++) {
+            for (int j = 0; j < count - i - 1; j++) {
+                if (entries[j].points < entries[j+1].points) {
+                    top_entry_t temp = entries[j];
+                    entries[j] = entries[j+1];
+                    entries[j+1] = temp;
+                }
             }
         }
     }
-
     pthread_mutex_unlock(&sessions_mutex);
-    
-    // Escrever top 5
+
+    // Write Top 5 Table (Always 5 rows)
     for (int i = 0; i < 5; i++) {
         if (entries && i < count) {
             fprintf(fp, "|  #%d  | %-6d | %-6d |\n", i+1, entries[i].id, entries[i].points);
@@ -247,6 +265,7 @@ void create_top5(){
             fprintf(fp, "|  #%d  |        |        |\n", i+1);
         }
     }
+
     fprintf(fp, "+------+--------+--------+\n");
 
     if (entries) free(entries);
@@ -283,6 +302,7 @@ void* session_worker(void* arg) {
         session.active = 1;
 
         int client_id = extractIdFromPipe(req.req_pipe);
+
         session.client_id = client_id;
 
         // 3. Connect to Client
@@ -343,12 +363,12 @@ void* session_worker(void* arg) {
                 while(session.active) {
                     pthread_t pacman_tid;
                     pthread_t *ghost_tids = malloc(game_board.n_ghosts * sizeof(pthread_t));
-                    
+
                     int local_thread_shutdown = 0; 
-                    
-                    // Reset shutdown for safety inside rwlock
+
+                    // Reset shutdown flags
                     pthread_rwlock_wrlock(&game_board.state_lock);
-                    // (Any necessary resets)
+                    game_board.thread_shutdown = 0;
                     pthread_rwlock_unlock(&game_board.state_lock);
 
                     pthread_create(&pacman_tid, NULL, pacman_thread, &session);
@@ -375,37 +395,48 @@ void* session_worker(void* arg) {
                     free(ghost_tids);
 
                     // Stop updates before processing result
-                    pthread_cancel(board_thread); 
-                    pthread_join(board_thread, NULL);
+                    pthread_rwlock_wrlock(&game_board.state_lock);
+                    game_board.thread_shutdown = 1;
+                    pthread_rwlock_unlock(&game_board.state_lock);
+                    
+                    pthread_join(board_thread, NULL); 
 
                     int result = 0;
+                    int current_points = 0;
+
                     if (retval) {
                         result = *retval;
                         free(retval);
                     }
 
+                    // Save points BEFORE any cleanup
+                    if (game_board.pacmans != NULL) {
+                        current_points = game_board.pacmans[0].points;
+                    }
+
                     if(result == NEXT_LEVEL) {
-                        accumulated_points = game_board.pacmans[0].points;
-                        ServerBoardThread(&session, 1, 0); // Victory
+                        accumulated_points = current_points;  // Use saved value
+                        ServerBoardThread(&session, 1, 0);
                         sleep_ms(game_board.tempo);
-                        break; // Go to next level file
+                        break;
                     }
 
                     if(result == QUIT_GAME) {
-                        ServerBoardThread(&session, 0, 1); // Game Over
+                        ServerBoardThread(&session, 0, 1);
                         sleep_ms(game_board.tempo);
                         end_game = true;
                         break;
                     }
-                    if(result == CONTINUE_PLAY)
-                        continue;
 
-                    // If continue play (e.g. lost life but not game over), update points
-                    accumulated_points = game_board.pacmans[0].points;
-                    
-                    // Restart update thread if we are continuing in the same level
-                    if (session.active && !end_game) {
-                         pthread_create(&board_thread, NULL, board_updates, &session);
+                    if(result == CONTINUE_PLAY) {
+                        // If continue play (e.g. lost life but not game over), update points
+                        accumulated_points = current_points;
+                        
+                        // Restart update thread if we are continuing in the same level
+                        if (session.active && !end_game) {
+                            pthread_create(&board_thread, NULL, board_updates, &session);
+                        }
+                        continue;
                     }
                 }
                 unload_level(&game_board);
@@ -416,12 +447,17 @@ void* session_worker(void* arg) {
 
         // Cleanup Session
         session.active = 0;
-        pthread_cancel(session_thd); 
-        pthread_join(session_thd, NULL);
-        remove_session(client_id);
 
-        close(session.notif_fd);
-        close(session.req_fd);
+        pthread_join(session_thd, NULL);
+        remove_session(&session);
+
+        // Only close if not already closed
+        if (session.notif_fd != -1) {
+            close(session.notif_fd);
+        }
+        if (session.req_fd != -1) {
+            close(session.req_fd);
+        }
         pthread_rwlock_destroy(&game_board.state_lock);
         printf("Session ended.\n");
     }
@@ -440,14 +476,14 @@ int main(int argc, char** argv) {
     int max_games = atoi(argv[2]);
     char *server_fifo = argv[3];
 
-    active_sessions = malloc(max_games * sizeof(session_t));
+    active_sessions = malloc(max_games * sizeof(session_entry_t));
     max_sessions=max_games;
     if (!active_sessions) {
         perror("malloc failed");
         return -1;
     }
     
-    memset(active_sessions, 0, max_games * sizeof(session_t));
+    memset(active_sessions, 0, max_games * sizeof(session_entry_t));
 
 
     srand((unsigned int)time(NULL));
@@ -475,11 +511,17 @@ int main(int argc, char** argv) {
     printf("Server listening on %s with %d worker threads.\n", server_fifo, max_games);
 
 
-    while(1){
-        if(sigurs1_received){
-            sigurs1_received=0;
+    while (1) {
+        if (sigurs1_received) {
+            sigurs1_received = 0;
             create_top5();
         }
+
+        if (server_id == -1) {
+            server_id = open(server_fifo, O_RDONLY);
+            if (server_id == -1) continue;
+        }
+        
         char buffer[81];
         ssize_t n = read(server_id, buffer, 81);
         if(n<=0){
