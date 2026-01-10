@@ -17,7 +17,7 @@
 #include <signal.h>
 #include "sessions.h"
 
-volatile sig_atomic_t sigurs1_received =0;
+volatile sig_atomic_t sigusr1_received =0;
 
 #define BUFFER_SIZE 10
 
@@ -49,7 +49,7 @@ char *global_levels_dir;
 
 void sigusr1_handler(int sig) {
     (void)sig;
-    sigurs1_received = 1;
+    sigusr1_received = 1;
 }
 
 // tem de se fazer uma funçao para o write para ele esperar os bites
@@ -452,8 +452,8 @@ int main(int argc, char** argv) {
 
 
     while(1){
-        if(sigurs1_received){
-            sigurs1_received=0;
+        if(sigusr1_received){
+            sigusr1_received=0;
             create_top5();
         }
         char buffer[81];
