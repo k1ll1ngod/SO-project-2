@@ -4,7 +4,7 @@ CFLAGS = -g -Wall -Wextra -std=c17 -D_POSIX_C_SOURCE=200809L -pthread
 LDFLAGS = -lncurses -pthread
 
 #CHANGE: Adicionar flags para Thread Sanitizer
-SANITIZE_FLAGS = -fsanitize=thread -fno-omit-frame-pointer -O1
+SANITIZE_FLAGS = -fno-omit-frame-pointer -O1
 
 # Directory variables
 OBJ_DIR = obj

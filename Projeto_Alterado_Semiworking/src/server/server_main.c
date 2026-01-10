@@ -65,6 +65,19 @@ ssize_t read_exact(int fd, void *buf, size_t n) {
     return total;
 }
 
+ssize_t write_all(int fd, const void *buf, size_t n) {
+    size_t total = 0;
+    const char *p = buf;
+
+    while (total < n) {
+        ssize_t w = write(fd, p + total, n - total);
+        if (w <= 0)
+            return w;
+        total += w;
+    }
+    return total;
+}
+
 int extractIdFromPipe (const char *pipe_path) {
     int id = -1;
       const char *last_underscore = strrchr(pipe_path, '_');
@@ -143,24 +156,24 @@ void ServerBoardThread(session_t *session, int victory, int game_over){
     pthread_rwlock_rdlock(&session->board->state_lock);
     char Opcode = 4;
     
-    write(session->notif_fd, &Opcode, sizeof(Opcode));
-    write(session->notif_fd, &session->board->width, sizeof(int));
-    write(session->notif_fd, &session->board->height, sizeof(int));
-    write(session->notif_fd, &session->board->tempo, sizeof(int));
-    write(session->notif_fd, &victory, sizeof(int));
-    write(session->notif_fd, &game_over, sizeof(int));
+    write_all(session->notif_fd, &Opcode, sizeof(Opcode));
+    write_all(session->notif_fd, &session->board->width, sizeof(int));
+    write_all(session->notif_fd, &session->board->height, sizeof(int));
+    write_all(session->notif_fd, &session->board->tempo, sizeof(int));
+    write_all(session->notif_fd, &victory, sizeof(int));
+    write_all(session->notif_fd, &game_over, sizeof(int));
 
     int points = 0;
     if(session->board->pacmans != NULL) {
         points = session->board->pacmans->points;
     }
-    write(session->notif_fd, &points, sizeof(int));
+    write_all(session->notif_fd, &points, sizeof(int));
 
     char *tabuleiro = malloc(session->board->width * session->board->height);
     for(int i = 0; i < session->board->width * session->board->height; i++){
         tabuleiro[i] = TranslateDataToVisual(session, i);
     }
-    write(session->notif_fd, tabuleiro, session->board->width * session->board->height);
+    write_all(session->notif_fd, tabuleiro, session->board->width * session->board->height);
     
     pthread_rwlock_unlock(&session->board->state_lock);
     free(tabuleiro);    
@@ -311,7 +324,7 @@ void* session_worker(void* arg) {
         if (session.notif_fd == -1) {
             continue; 
         }
-        write(session.notif_fd, response, 2);
+        write_all(session.notif_fd, response, 2);
         
         session.req_fd = open(req.req_pipe, O_RDONLY);
         if (session.req_fd == -1) {
