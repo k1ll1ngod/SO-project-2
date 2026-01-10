@@ -96,6 +96,7 @@ int main(int argc, char *argv[]) {
         pthread_mutex_lock(&mutex);
         if (stop_execution){
             pthread_mutex_unlock(&mutex);
+            terminal_cleanup();
             break;
         }
 
