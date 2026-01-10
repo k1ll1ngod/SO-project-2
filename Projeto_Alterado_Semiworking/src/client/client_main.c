@@ -24,7 +24,7 @@ static void *receiver_thread(void *arg) {
         
         Board board = receive_board_update();
 
-        if (!board.data || board.game_over == 1){
+        if (!board.data){
             pthread_mutex_lock(&mutex);
             stop_execution = true;
             pthread_mutex_unlock(&mutex);
@@ -35,8 +35,17 @@ static void *receiver_thread(void *arg) {
         tempo = board.tempo;
         pthread_mutex_unlock(&mutex);
 
+        // ALWAYS draw the board first
         draw_board_client(board);
         refresh_screen();
+
+        // THEN check if game is over and stop
+        if (board.game_over == 1 || board.victory == 1){
+            pthread_mutex_lock(&mutex);
+            stop_execution = true;
+            pthread_mutex_unlock(&mutex);
+            break;
+        }
     }
 
     debug("Returning receiver thread...\n");
