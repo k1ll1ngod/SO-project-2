@@ -40,6 +40,19 @@ ssize_t read_all(int fd, void *buf, size_t n) {
     return total;
 }
 
+ssize_t write_all(int fd, const void *buf, size_t n) {
+    size_t total = 0;
+    const char *p = buf;
+
+    while (total < n) {
+        ssize_t w = write(fd, p + total, n - total);
+        if (w <= 0)
+            return w;
+        total += w;
+    }
+    return total;
+}
+
 int pacman_connect(char const *req_pipe_path, char const *notif_pipe_path, char const *server_pipe_path) {
   mkfifo(req_pipe_path,0666);
   mkfifo(notif_pipe_path,0666);
@@ -64,7 +77,7 @@ int pacman_connect(char const *req_pipe_path, char const *notif_pipe_path, char 
   debug("  req_pipe: %s\n", req_pipe_path);
   debug("  notif_pipe: %s\n", notif_pipe_path);
 
-  write(server, connect,sizeof(connect));
+  write_all(server, connect,sizeof(connect));
 
   close(server);
 
@@ -74,7 +87,7 @@ int pacman_connect(char const *req_pipe_path, char const *notif_pipe_path, char 
   }
 
   char response[2];
-  read(session.notif_pipe, response, 2);
+  read_all(session.notif_pipe, response, 2);
 
   if (response[0] != 1 || response[1] != 0) {
     return 1;
@@ -89,12 +102,12 @@ void pacman_play(char command) {
   char instruction[2];
   instruction[0]=Opcode;
   instruction[1]= command;
-  write(session.req_pipe,instruction, sizeof(instruction));
+  write_all(session.req_pipe,instruction, sizeof(instruction));
 }
 
 int pacman_disconnect() {
   char Opcode = 2;
-  write(session.req_pipe,&Opcode, sizeof(Opcode));
+  write_all(session.req_pipe,&Opcode, sizeof(Opcode));
   close(session.notif_pipe);
   close(session.req_pipe);
   unlink(session.notif_pipe_path);
@@ -110,7 +123,7 @@ Board receive_board_update() {
   debug("AA");
   Board tabuleiro={0};
     debug("Estou na 110 \n");
-  read(session.notif_pipe,Opcode,1);
+  read_all(session.notif_pipe,Opcode,1);
   if (Opcode[0]==(char)4){
     debug("Estou na 113 \n");
 

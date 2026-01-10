@@ -3,6 +3,9 @@ CC = gcc
 CFLAGS = -g -Wall -Wextra -std=c17 -D_POSIX_C_SOURCE=200809L -pthread
 LDFLAGS = -lncurses -pthread
 
+#CHANGE: Adicionar flags para Thread Sanitizer
+SANITIZE_FLAGS = -fno-omit-frame-pointer -O1
+
 # Directory variables
 OBJ_DIR = obj
 BIN_DIR = bin
@@ -36,6 +39,11 @@ vpath %.c $(CLIENT_DIR) $(SERVER_DIR) $(INCLUDE_DIR)
 # Make targets
 all: client Pacmanist
 
+#CHANGE: Adicionar target com sanitizer
+sanitize: CFLAGS += $(SANITIZE_FLAGS)
+sanitize: LDFLAGS += $(SANITIZE_FLAGS)
+sanitize: clean all
+
 client: $(BIN_DIR)/$(CLIENT)
 Pacmanist: $(BIN_DIR)/$(SERVER)
 
@@ -58,8 +66,15 @@ folders:
 # Clean object files and executable
 clean:
 	rm -f $(OBJ_DIR)/*.o
-	rm -f $(BIN_DIR)/$(TARGET)
 	rm -f $(BIN_DIR)/$(CLIENT)
 	rm -f $(BIN_DIR)/$(SERVER)
+
+#CHANGE: Adicionar help
+help:
+	@echo "Targets:"
+	@echo "  make all       - Compile normal"
+	@echo "  make sanitize  - Compile com Thread Sanitizer"
+	@echo "  make clean     - Limpar ficheiros compilados"
+
 # indentify targets that do not create files
-.PHONY: all clean run folders
+.PHONY: all clean run folders sanitize help
