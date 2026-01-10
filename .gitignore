@@ -1,0 +1,10 @@
+# Build artifacts
+obj/
+bin/
+*.o
+
+# Debug files
+*.log
+
+# CodeQL
+_codeql_detected_source_root
