@@ -342,6 +342,19 @@ void* session_worker(void* arg) {
         if (n_levels < 0) {
             perror("scandir");
         } else {
+            // Count actual .lvl files first
+            int total_levels = 0;
+            for (int i = 0; i < n_levels; i++) {
+                char *d_name = namelist[i]->d_name;
+                if (d_name[0] == '.') continue;
+                char *dot = strrchr(d_name, '.');
+                if (dot && strcmp(dot, ".lvl") == 0) {
+                    total_levels++;
+                }
+            }
+            
+            int current_level = 0;
+            
             for (int k = 0; k < n_levels && !end_game && session.active; k++) {
                 char *d_name = namelist[k]->d_name;
                 
@@ -349,7 +362,8 @@ void* session_worker(void* arg) {
                 char *dot = strrchr(d_name, '.');
                 if (!dot || strcmp(dot, ".lvl") != 0) { free(namelist[k]); continue; }
 
-                printf("Loading Level: %s\n", d_name);
+                current_level++;
+                printf("Loading Level: %s (%d/%d)\n", d_name, current_level, total_levels);
                 load_level(&game_board, d_name, global_levels_dir, accumulated_points);
                 
                 // Send initial board state
@@ -415,15 +429,32 @@ void* session_worker(void* arg) {
                     }
 
                     if(result == NEXT_LEVEL) {
-                        accumulated_points = current_points;  // Use saved value
-                        ServerBoardThread(&session, 1, 0);
-                        sleep_ms(game_board.tempo);
-                        break;
+                        accumulated_points = current_points;
+                        
+                        // Only show victory if this is the LAST level
+                        if (current_level == total_levels) {
+                            ServerBoardThread(&session, 1, 0);  // Victory!
+                            sleep_ms(1000);  // Show victory for 1 second
+                            end_game = true;  // End the game after final level
+                            
+                            // Force client disconnect
+                            session.active = 0;
+                            if (session.notif_fd != -1) {
+                                close(session.notif_fd);
+                                session.notif_fd = -1;
+                            }
+                            if (session.req_fd != -1) {
+                                close(session.req_fd);
+                                session.req_fd = -1;
+                            }
+                        }
+                        
+                        break;  // Move to next level or end
                     }
 
                     if(result == QUIT_GAME) {
                         ServerBoardThread(&session, 0, 1);
-                        sleep_ms(game_board.tempo);
+                        sleep_ms(3000);
                         end_game = true;
                         break;
                     }
@@ -443,7 +474,7 @@ void* session_worker(void* arg) {
                 free(namelist[k]);
             }
             free(namelist);
-        } 
+        }
 
         // Cleanup Session
         session.active = 0;
