@@ -99,6 +99,7 @@ int pacman_disconnect() {
   close(session.req_pipe);
   unlink(session.notif_pipe_path);
   unlink(session.req_pipe_path);
+  
   return 0;
 }
 

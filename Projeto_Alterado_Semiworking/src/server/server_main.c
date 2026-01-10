@@ -14,14 +14,28 @@
 #include <stdbool.h> 
 #include <fcntl.h>
 #include <semaphore.h>
+#include <signal.h>
 #include "sessions.h"
 
+volatile sig_atomic_t sigurs1_received =0;
+
 #define BUFFER_SIZE 10
+
+typedef struct {
+    session_t *session;  // Ponteiro, não cópia!
+    int client_id;
+} session_entry_t;
+
+session_entry_t *active_sessions = NULL; 
+int num_active_sessions = 0;
+int max_sessions=0;
+pthread_mutex_t sessions_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 typedef struct {
     char req_pipe[41];
     char notif_pipe[41];
 } connection_request_t;
+
 
 connection_request_t request_buffer[BUFFER_SIZE];
 int buf_in = 0;
@@ -32,6 +46,11 @@ sem_t buf_slots;
 sem_t buf_items;
 
 char *global_levels_dir;
+
+void sigusr1_handler(int sig) {
+    (void)sig;
+    sigurs1_received = 1;
+}
 
 // tem de se fazer uma funçao para o write para ele esperar os bites
 ssize_t read_exact(int fd, void *buf, size_t n) {
@@ -44,6 +63,14 @@ ssize_t read_exact(int fd, void *buf, size_t n) {
         total += r;
     }
     return total;
+}
+
+int extractIdFromPipe (const char *pipe_path) {
+  const char *last_underscore = strrchr(pipe_path, '_');
+  if (last_underscore) {
+      return atoi(last_underscore + 1);
+  }
+  return -1;
 }
 
 void* ClientSessionThread(void *arg){
@@ -131,15 +158,86 @@ void* board_updates(void *arg){
     session_t *session = arg;
     while (1) {
         sleep_ms(session->board->tempo);
-        if(session->active)
+        pthread_rwlock_rdlock(&session->board->state_lock);
+        if(session->board->thread_shutdown || !session->active){
+            break;
+        }
+        pthread_rwlock_unlock(&session->board->state_lock);
         ServerBoardThread(session, 0, 0);
-        else break;
     }
+    pthread_rwlock_unlock(&session->board->state_lock);
     return NULL;
+}
+
+void add_session(session_t *session, int client_id){
+    pthread_mutex_lock(&sessions_mutex);
+    if(num_active_sessions < max_sessions){
+        active_sessions[num_active_sessions].session = session;  // Guarda ponteiro
+        active_sessions[num_active_sessions].client_id = client_id;
+        num_active_sessions++;
+        printf("Session added. Client ID: %d\n", client_id);
+    }
+    pthread_mutex_unlock(&sessions_mutex);
+}
+void remove_session(int client_id){
+    pthread_mutex_lock(&sessions_mutex);
+    for(int i=0; i<num_active_sessions;i++){
+        if (active_sessions[i].client_id == client_id) {
+            active_sessions[i] = active_sessions[num_active_sessions - 1];
+            num_active_sessions--;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&sessions_mutex);
+}
+
+void create_top5(){
+    FILE *fp = fopen("Top_5.txt","w");
+    if(!fp)return;
+    fprintf(fp,"TOP 5\n");
+    pthread_mutex_lock(&sessions_mutex);
+    
+    typedef struct { int id; int points; } top_entry_t;
+    top_entry_t entries[num_active_sessions];
+    
+    for (int i = 0; i < num_active_sessions; i++) {
+        entries[i].id = active_sessions[i].client_id;
+        entries[i].points = 0;
+        if (active_sessions[i].board && active_sessions[i].board->pacmans) {
+            entries[i].points = active_sessions[i].board->pacmans[0].points;
+        }
+    }
+
+    // Bubble sort
+    for (int i = 0; i < num_active_sessions - 1; i++) {
+        for (int j = 0; j < num_active_sessions - i - 1; j++) {
+            if (entries[j].points < entries[j+1].points) {
+                top_entry_t temp = entries[j];
+                entries[j] = entries[j+1];
+                entries[j+1] = temp;
+            }
+        }
+    }
+
+    pthread_mutex_unlock(&sessions_mutex);
+    
+    // Escrever top 5
+    for (int i = 0; i < num_active_sessions && i < 5; i++) {
+        fprintf(fp, "%d. ID: %d | Pontos: %d\n", i+1, entries[i].id, entries[i].points);
+    }
+    
+ 
+    fclose(fp);
 }
 
 void* session_worker(void* arg) {
     (void)arg;
+    sigset_t set;
+    sigemptyset(&set);
+    sigemptyset(&set);
+    sigaddset(&set, SIGUSR1);
+    pthread_sigmask(SIG_BLOCK,&set,NULL);
+
     while (1) {
         // 1. Consumer: Extract request from buffer
         connection_request_t req;
@@ -159,6 +257,9 @@ void* session_worker(void* arg) {
         session_t session;
         memset(&session, 0, sizeof(session));
         session.active = 1;
+
+        int client_id = extractIdFromPipe(req.req_pipe);
+        session.client_id = client_id;
 
         // 3. Connect to Client
         char response[2] = {1, 0};
@@ -185,6 +286,9 @@ void* session_worker(void* arg) {
         pthread_rwlock_init(&game_board.state_lock, NULL);
 
         session.board = &game_board;
+
+        add_session(&session, client_id);
+
         int accumulated_points = 0;
         bool end_game = false;
 
@@ -280,17 +384,17 @@ void* session_worker(void* arg) {
                          pthread_create(&board_thread, NULL, board_updates, &session);
                     }
                 }
-                 
                 unload_level(&game_board);
                 free(namelist[k]);
             }
             free(namelist);
-        }
+        } 
 
         // Cleanup Session
         session.active = 0;
         pthread_cancel(session_thd); 
         pthread_join(session_thd, NULL);
+        remove_session(client_id);
 
         close(session.notif_fd);
         close(session.req_fd);
@@ -299,6 +403,7 @@ void* session_worker(void* arg) {
     }
     return NULL;
 }
+
 
 int main(int argc, char** argv) {
 
@@ -311,8 +416,24 @@ int main(int argc, char** argv) {
     int max_games = atoi(argv[2]);
     char *server_fifo = argv[3];
 
+    active_sessions = malloc(max_games * sizeof(session_t));
+    max_sessions=max_games;
+    if (!active_sessions) {
+        perror("malloc failed");
+        return -1;
+    }
+    
+    memset(active_sessions, 0, max_games * sizeof(session_t));
+
+
     srand((unsigned int)time(NULL));
     open_debug_file("serverdebug.log");
+
+    struct sigaction sa;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags=0;
+    sa.sa_handler = sigusr1_handler;
+    sigaction(SIGUSR1, &sa, NULL);
 
     // Initialize Semaphores
     sem_init(&buf_slots, 0, BUFFER_SIZE);
@@ -329,8 +450,12 @@ int main(int argc, char** argv) {
     
     printf("Server listening on %s with %d worker threads.\n", server_fifo, max_games);
 
-    // --- Host Thread Loop (Producer) ---
+
     while(1){
+        if(sigurs1_received){
+            sigurs1_received=0;
+            create_top5();
+        }
         char buffer[81];
         ssize_t n = read(server_id, buffer, 81);
         if(n<=0){
