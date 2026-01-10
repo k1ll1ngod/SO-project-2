@@ -17,18 +17,18 @@
 #include <signal.h>
 #include "sessions.h"
 
-volatile sig_atomic_t sigurs1_received =0;
+volatile sig_atomic_t sigurs1_received = 0;
 
 #define BUFFER_SIZE 10
 
 typedef struct {
-    session_t *session;  // Ponteiro, não cópia!
+    session_t *session;
     int client_id;
 } session_entry_t;
 
 session_entry_t *active_sessions = NULL; 
 int num_active_sessions = 0;
-int max_sessions=0;
+int max_sessions = 0;
 pthread_mutex_t sessions_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 typedef struct {
@@ -47,12 +47,28 @@ sem_t buf_items;
 
 char *global_levels_dir;
 
+/**
+ * @brief Signal handler for SIGUSR1
+ * 
+ * Sets a flag to indicate SIGUSR1 was received, triggering Top 5 update
+ * 
+ * @param sig Signal number (unused)
+ */
 void sigusr1_handler(int sig) {
     (void)sig;
     sigurs1_received = 1;
 }
 
-// tem de se fazer uma funçao para o write para ele esperar os bites
+/**
+ * @brief Reads exact number of bytes from file descriptor
+ * 
+ * Continues reading until n bytes are read or error occurs
+ * 
+ * @param fd File descriptor to read from
+ * @param buf Buffer to store read data
+ * @param n Number of bytes to read
+ * @return Total bytes read, or <= 0 on error
+ */
 ssize_t read_exact(int fd, void *buf, size_t n) {
     size_t total = 0;
     char *p = buf;
@@ -65,6 +81,16 @@ ssize_t read_exact(int fd, void *buf, size_t n) {
     return total;
 }
 
+/**
+ * @brief Writes all bytes to file descriptor
+ * 
+ * Continues writing until all n bytes are written or error occurs
+ * 
+ * @param fd File descriptor to write to
+ * @param buf Buffer containing data to write
+ * @param n Number of bytes to write
+ * @return Total bytes written, or <= 0 on error
+ */
 ssize_t write_all(int fd, const void *buf, size_t n) {
     size_t total = 0;
     const char *p = buf;
@@ -78,13 +104,20 @@ ssize_t write_all(int fd, const void *buf, size_t n) {
     return total;
 }
 
+/**
+ * @brief Extracts client ID from pipe path
+ * 
+ * Searches for numeric ID in pipe path string, typically after last underscore
+ * 
+ * @param pipe_path Path to named pipe
+ * @return Extracted client ID, or -1 if not found
+ */
 int extractIdFromPipe (const char *pipe_path) {
     int id = -1;
       const char *last_underscore = strrchr(pipe_path, '_');
       if (last_underscore) {
           id = atoi(last_underscore + 1);
       }
-      // Fallback: If ID is invalid (0 or -1), try to find ANY number in the string
       if (id <= 0) {
           const char *p = pipe_path;
           while (*p) {
@@ -98,29 +131,38 @@ int extractIdFromPipe (const char *pipe_path) {
       return id;
 }
 
+/**
+ * @brief Thread function that handles client commands
+ * 
+ * Continuously reads commands from client request pipe and updates game state
+ * Handles disconnect (opcode 2) and movement (opcode 3) commands
+ * 
+ * @param arg Pointer to session_t structure
+ * @return NULL on thread completion
+ */
 void* ClientSessionThread(void *arg){
     session_t* session = (session_t*)arg;
     char msg[2];
 
-    while(session->active==1){
-        ssize_t text= read(session->req_fd,msg,2);
-        if(text<=0){
-            session->active=0;
+    while(session->active == 1){
+        ssize_t text = read(session->req_fd, msg, 2);
+        if (text <= 0) {
+            session->active = 0;
             break;
         }
-        if(msg[0]==2){
-            session->active=0;
+        if (msg[0] == 2) {
+            session->active = 0;
             break;  
         }
-        if(msg[0]==3){
-            char move=msg[1];
+        if (msg[0] == 3) {
+            char move = msg[1];
             pthread_rwlock_wrlock(&session->board->state_lock);
             if (session->board->pacmans != NULL) {
                 pacman_t *p = &session->board->pacmans[0];
-                p->moves[0].command= move;
+                p->moves[0].command = move;
                 p->moves[0].turns_left = 1;
-                p->moves[0].turns= 1;
-                p->n_moves=1;
+                p->moves[0].turns = 1;
+                p->n_moves = 1;
             }
             pthread_rwlock_unlock(&session->board->state_lock);
         }  
@@ -128,28 +170,48 @@ void* ClientSessionThread(void *arg){
     return NULL;
 }
 
+/**
+ * @brief Translates internal board data to visual character representation
+ * 
+ * Converts board cell content to client-displayable character
+ * Priority: Wall > Pacman > Monster > Portal > Dot > Empty
+ * 
+ * @param session Pointer to current session
+ * @param position Board position index
+ * @return Character to display: '#' (wall), 'C' (pacman), 'M' (monster), '@' (portal), '.' (dot), ' ' (empty)
+ */
 char TranslateDataToVisual(session_t *session, int position){
-    char data_received= session->board->board[position].content;
-    char data_portals=session->board->board[position].has_portal;
-    char data_dots=session->board->board[position].has_dot;
-    if (data_received=='W'){
+    char data_received = session->board->board[position].content;
+    char data_portals = session->board->board[position].has_portal;
+    char data_dots = session->board->board[position].has_dot;
+    if (data_received == 'W') {
         return '#';
     }
-    if (data_received=='P'){
+    if (data_received =='P') {
         return 'C';
     }
-    if (data_received=='M'){
+    if (data_received =='M') {
         return 'M';
     }
-    if (data_portals==1){
+    if (data_portals ==1) {
         return '@';
     }
-    if (data_dots ==1){
+    if (data_dots == 1) {
         return '.';
     }
     return ' ';
 }
 
+/**
+ * @brief Sends current board state to client
+ * 
+ * Serializes board dimensions, tempo, victory/game_over flags, points,
+ * and visual board representation, then writes to notification pipe
+ * 
+ * @param session Pointer to current session
+ * @param victory 1 if player won, 0 otherwise
+ * @param game_over 1 if game ended, 0 otherwise
+ */
 void ServerBoardThread(session_t *session, int victory, int game_over){
     if (session->board->width == 0) return;
 
@@ -179,13 +241,22 @@ void ServerBoardThread(session_t *session, int victory, int game_over){
     free(tabuleiro);    
 }
 
+/**
+ * @brief Thread function that periodically sends board updates to client
+ * 
+ * Runs until session becomes inactive or shutdown flag is set
+ * Sends board state at intervals defined by board->tempo
+ * 
+ * @param arg Pointer to session_t structure
+ * @return NULL on thread completion
+ */
 void* board_updates(void *arg){
     session_t *session = arg;
     while (1) {
         sleep_ms(session->board->tempo);
         pthread_rwlock_rdlock(&session->board->state_lock);
         if(session->board->thread_shutdown || !session->active){
-            pthread_rwlock_unlock(&session->board->state_lock);  // IMPORTANT: unlock before breaking
+            pthread_rwlock_unlock(&session->board->state_lock); 
             break;
         }
         pthread_rwlock_unlock(&session->board->state_lock);
@@ -194,6 +265,14 @@ void* board_updates(void *arg){
     return NULL;
 }
 
+/**
+ * @brief Adds a session to the active sessions list
+ * 
+ * Thread-safe addition using sessions_mutex
+ * 
+ * @param session Pointer to session to add
+ * @param client_id Client identifier
+ */
 void add_session(session_t *session, int client_id){
     pthread_mutex_lock(&sessions_mutex);
     if(num_active_sessions < max_sessions){
@@ -205,10 +284,17 @@ void add_session(session_t *session, int client_id){
     pthread_mutex_unlock(&sessions_mutex);
 }
 
+/**
+ * @brief Removes a session from the active sessions list
+ * 
+ * Thread-safe removal using sessions_mutex
+ * Searches by memory address to avoid ID collision issues
+ * 
+ * @param session_ptr Pointer to session to remove
+ */
 void remove_session(session_t *session_ptr){
     pthread_mutex_lock(&sessions_mutex);
-    for(int i=0; i<num_active_sessions;i++){
-        // Compare memory address, not ID, to avoid collisions when ID=0
+    for(int i = 0; i < num_active_sessions; i++){
         if (active_sessions[i].session == session_ptr) {
             active_sessions[i] = active_sessions[num_active_sessions - 1];
             num_active_sessions--;
@@ -218,22 +304,27 @@ void remove_session(session_t *session_ptr){
     pthread_mutex_unlock(&sessions_mutex);
 }
 
+/**
+ * @brief Creates or updates Top_5.txt file with current rankings
+ * 
+ * Sorts active sessions by points and writes top 5 to file
+ * Thread-safe access to sessions list and board data
+ * Always displays 5 rows (empty if fewer than 5 players)
+ */
 void create_top5(){
     FILE *fp = fopen("Top_5.txt","w");
     if(!fp)return;
 
-    // Header styling
-    fprintf(fp, "+------+--------+--------+\n");
-    fprintf(fp, "|        TOP  5          |\n");
-    fprintf(fp, "+------+--------+--------+\n");
-    fprintf(fp, "| Rank |   ID   | Points |\n");
-    fprintf(fp, "+------+--------+--------+\n");
+    fprintf(fp, "+--------+--------+--------+\n");
+    fprintf(fp, "|          TOP  5          |\n");
+    fprintf(fp, "+--------+--------+--------+\n");
+    fprintf(fp, "|  Rank  |   ID   | Points |\n");
+    fprintf(fp, "+--------+--------+--------+\n");
 
     pthread_mutex_lock(&sessions_mutex);
     
     typedef struct { int id; int points; } top_entry_t;
     
-    // Safer allocation than VLA for variable sizes
     int count = num_active_sessions;
     top_entry_t *entries = NULL;
     if (count > 0) {
@@ -247,8 +338,6 @@ void create_top5(){
             
             session_t *sess = active_sessions[i].session;
             if (sess && sess->board) {
-                // Must lock the board to safely read pacman pointer and points
-                // otherwise a worker performing unload_level/load_level causes segfault
                 pthread_rwlock_rdlock(&sess->board->state_lock);
                 if (sess->board->pacmans != NULL) {
                     entries[i].points = sess->board->pacmans[0].points;
@@ -257,7 +346,6 @@ void create_top5(){
             }
         }
 
-        // Bubble sort descending
         for (int i = 0; i < count - 1; i++) {
             for (int j = 0; j < count - i - 1; j++) {
                 if (entries[j].points < entries[j+1].points) {
@@ -268,24 +356,34 @@ void create_top5(){
             }
         }
     }
+
     pthread_mutex_unlock(&sessions_mutex);
 
-    // Write Top 5 Table (Always 5 rows)
     for (int i = 0; i < 5; i++) {
         if (entries && i < count) {
-            fprintf(fp, "|  #%d  | %-6d | %-6d |\n", i+1, entries[i].id, entries[i].points);
+            fprintf(fp, "|   %d    |   %-4d |  %-5d |\n", i+1, entries[i].id, entries[i].points);
         } else {
-            fprintf(fp, "|  #%d  |        |        |\n", i+1);
+            fprintf(fp, "|        |        |        |\n");
         }
     }
 
-    fprintf(fp, "+------+--------+--------+\n");
+    fprintf(fp, "+--------+--------+--------+\n");
 
     if (entries) free(entries);
     fclose(fp);
     printf("Top 5 board updated\n");
 }
 
+/**
+ * @brief Worker thread that handles a single game session
+ * 
+ * Consumes connection requests from buffer, establishes client connection,
+ * manages game loop through all levels, handles pacman and ghost threads,
+ * and cleans up resources on completion
+ * 
+ * @param arg Unused (workers are generic)
+ * @return NULL on thread completion (runs indefinitely)
+ */
 void* session_worker(void* arg) {
     (void)arg;
     sigset_t set;
@@ -339,7 +437,7 @@ void* session_worker(void* arg) {
         // 5. Game Logic
         board_t game_board;
         memset(&game_board, 0, sizeof(board_t));
-        // Initialize rwlock for this board instance
+
         pthread_rwlock_init(&game_board.state_lock, NULL);
 
         session.board = &game_board;
@@ -349,7 +447,6 @@ void* session_worker(void* arg) {
         int accumulated_points = 0;
         bool end_game = false;
 
-        // Use scandir to get levels so each thread iterates independently
         struct dirent **namelist;
         int n_levels = scandir(global_levels_dir, &namelist, NULL, alphasort);
         if (n_levels < 0) {
@@ -379,15 +476,13 @@ void* session_worker(void* arg) {
                 printf("Loading Level: %s (%d/%d)\n", d_name, current_level, total_levels);
                 load_level(&game_board, d_name, global_levels_dir, accumulated_points);
                 
-                // Send initial board state
                 ServerBoardThread(&session, 0, 0);
 
-                // Start periodic updates
                 pthread_t board_thread;
                 pthread_create(&board_thread, NULL, board_updates, &session);
 
                 // Level Loop
-                while(session.active) {
+                while (session.active) {
                     pthread_t pacman_tid;
                     pthread_t *ghost_tids = malloc(game_board.n_ghosts * sizeof(pthread_t));
 
@@ -436,7 +531,6 @@ void* session_worker(void* arg) {
                         free(retval);
                     }
 
-                    // Save points BEFORE any cleanup
                     if (game_board.pacmans != NULL) {
                         current_points = game_board.pacmans[0].points;
                     }
@@ -444,13 +538,11 @@ void* session_worker(void* arg) {
                     if(result == NEXT_LEVEL) {
                         accumulated_points = current_points;
                         
-                        // Only show victory if this is the LAST level
                         if (current_level == total_levels) {
-                            ServerBoardThread(&session, 1, 0);  // Victory!
-                            sleep_ms(1000);  // Show victory for 1 second
-                            end_game = true;  // End the game after final level
+                            ServerBoardThread(&session, 1, 0);
+                            sleep_ms(1000);
+                            end_game = true; 
                             
-                            // Force client disconnect
                             session.active = 0;
                             if (session.notif_fd != -1) {
                                 close(session.notif_fd);
@@ -461,22 +553,19 @@ void* session_worker(void* arg) {
                                 session.req_fd = -1;
                             }
                         }
-                        
-                        break;  // Move to next level or end
+                        break;
                     }
 
-                    if(result == QUIT_GAME) {
+                    if (result == QUIT_GAME) {
                         ServerBoardThread(&session, 0, 1);
                         sleep_ms(3000);
                         end_game = true;
                         break;
                     }
 
-                    if(result == CONTINUE_PLAY) {
-                        // If continue play (e.g. lost life but not game over), update points
+                    if (result == CONTINUE_PLAY) {
                         accumulated_points = current_points;
-                        
-                        // Restart update thread if we are continuing in the same level
+
                         if (session.active && !end_game) {
                             pthread_create(&board_thread, NULL, board_updates, &session);
                         }
@@ -495,7 +584,6 @@ void* session_worker(void* arg) {
         pthread_join(session_thd, NULL);
         remove_session(&session);
 
-        // Only close if not already closed
         if (session.notif_fd != -1) {
             close(session.notif_fd);
         }
@@ -508,7 +596,18 @@ void* session_worker(void* arg) {
     return NULL;
 }
 
-
+/**
+ * @brief Main server entry point
+ * 
+ * Initializes server infrastructure: creates worker thread pool,
+ * opens registration FIFO, handles SIGUSR1 for Top 5 updates,
+ * and dispatches incoming connection requests to worker threads
+ * via producer-consumer buffer
+ * 
+ * @param argc Argument count (must be 4)
+ * @param argv Arguments: [program] <levels_dir> <max_games> <pipe_name>
+ * @return 0 on success (never returns in normal operation)
+ */
 int main(int argc, char** argv) {
 
     if (argc != 4) {
@@ -529,7 +628,6 @@ int main(int argc, char** argv) {
     
     memset(active_sessions, 0, max_games * sizeof(session_entry_t));
 
-
     srand((unsigned int)time(NULL));
     open_debug_file("serverdebug.log");
 
@@ -539,13 +637,11 @@ int main(int argc, char** argv) {
     sa.sa_handler = sigusr1_handler;
     sigaction(SIGUSR1, &sa, NULL);
 
-    // Initialize Semaphores
     sem_init(&buf_slots, 0, BUFFER_SIZE);
     sem_init(&buf_items, 0, 0);
 
-    // Create a pool of worker threads
     pthread_t *workers = malloc(sizeof(pthread_t) * max_games);
-    for(int i=0; i < max_games; i++) {
+    for(int i = 0; i < max_games; i++) {
         pthread_create(&workers[i], NULL, session_worker, NULL);
     }
 
@@ -568,15 +664,14 @@ int main(int argc, char** argv) {
         
         char buffer[81];
         ssize_t n = read(server_id, buffer, 81);
-        if(n<=0){
-            // If writer closes, re-open to block again
+        if(n <= 0) {
             if (n == 0) {
                  close(server_id);
                  server_id = open(server_fifo, O_RDONLY);
             }
             continue;
         }
-        if (buffer[0] != 1){
+        if (buffer[0] != 1) {
             continue;
         } 
         
@@ -586,7 +681,6 @@ int main(int argc, char** argv) {
         new_req.req_pipe[40] = '\0';
         new_req.notif_pipe[40] = '\0';
 
-        // Add to buffer
         sem_wait(&buf_slots);
         pthread_mutex_lock(&buf_mutex);
         
