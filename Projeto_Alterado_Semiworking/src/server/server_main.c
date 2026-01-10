@@ -172,12 +172,12 @@ void* board_updates(void *arg){
         sleep_ms(session->board->tempo);
         pthread_rwlock_rdlock(&session->board->state_lock);
         if(session->board->thread_shutdown || !session->active){
+            pthread_rwlock_unlock(&session->board->state_lock);  // IMPORTANT: unlock before breaking
             break;
         }
         pthread_rwlock_unlock(&session->board->state_lock);
         ServerBoardThread(session, 0, 0);
     }
-    pthread_rwlock_unlock(&session->board->state_lock);
     return NULL;
 }
 
@@ -363,12 +363,12 @@ void* session_worker(void* arg) {
                 while(session.active) {
                     pthread_t pacman_tid;
                     pthread_t *ghost_tids = malloc(game_board.n_ghosts * sizeof(pthread_t));
-                    
+
                     int local_thread_shutdown = 0; 
-                    
-                    // Reset shutdown for safety inside rwlock
+
+                    // Reset shutdown flags
                     pthread_rwlock_wrlock(&game_board.state_lock);
-                    // (Any necessary resets)
+                    game_board.thread_shutdown = 0;
                     pthread_rwlock_unlock(&game_board.state_lock);
 
                     pthread_create(&pacman_tid, NULL, pacman_thread, &session);
@@ -395,37 +395,48 @@ void* session_worker(void* arg) {
                     free(ghost_tids);
 
                     // Stop updates before processing result
-                    pthread_cancel(board_thread); 
-                    pthread_join(board_thread, NULL);
+                    pthread_rwlock_wrlock(&game_board.state_lock);
+                    game_board.thread_shutdown = 1;
+                    pthread_rwlock_unlock(&game_board.state_lock);
+                    
+                    pthread_join(board_thread, NULL); 
 
                     int result = 0;
+                    int current_points = 0;
+
                     if (retval) {
                         result = *retval;
                         free(retval);
                     }
 
+                    // Save points BEFORE any cleanup
+                    if (game_board.pacmans != NULL) {
+                        current_points = game_board.pacmans[0].points;
+                    }
+
                     if(result == NEXT_LEVEL) {
-                        accumulated_points = game_board.pacmans[0].points;
-                        ServerBoardThread(&session, 1, 0); // Victory
+                        accumulated_points = current_points;  // Use saved value
+                        ServerBoardThread(&session, 1, 0);
                         sleep_ms(game_board.tempo);
-                        break; // Go to next level file
+                        break;
                     }
 
                     if(result == QUIT_GAME) {
-                        ServerBoardThread(&session, 0, 1); // Game Over
+                        ServerBoardThread(&session, 0, 1);
                         sleep_ms(game_board.tempo);
                         end_game = true;
                         break;
                     }
-                    if(result == CONTINUE_PLAY)
-                        continue;
 
-                    // If continue play (e.g. lost life but not game over), update points
-                    accumulated_points = game_board.pacmans[0].points;
-                    
-                    // Restart update thread if we are continuing in the same level
-                    if (session.active && !end_game) {
-                         pthread_create(&board_thread, NULL, board_updates, &session);
+                    if(result == CONTINUE_PLAY) {
+                        // If continue play (e.g. lost life but not game over), update points
+                        accumulated_points = current_points;
+                        
+                        // Restart update thread if we are continuing in the same level
+                        if (session.active && !end_game) {
+                            pthread_create(&board_thread, NULL, board_updates, &session);
+                        }
+                        continue;
                     }
                 }
                 unload_level(&game_board);
@@ -436,12 +447,17 @@ void* session_worker(void* arg) {
 
         // Cleanup Session
         session.active = 0;
-        pthread_cancel(session_thd); 
+
         pthread_join(session_thd, NULL);
         remove_session(&session);
 
-        close(session.notif_fd);
-        close(session.req_fd);
+        // Only close if not already closed
+        if (session.notif_fd != -1) {
+            close(session.notif_fd);
+        }
+        if (session.req_fd != -1) {
+            close(session.req_fd);
+        }
         pthread_rwlock_destroy(&game_board.state_lock);
         printf("Session ended.\n");
     }
