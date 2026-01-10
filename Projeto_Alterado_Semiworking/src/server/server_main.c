@@ -194,23 +194,41 @@ void remove_session(int client_id){
 void create_top5(){
     FILE *fp = fopen("Top_5.txt","w");
     if(!fp)return;
-    fprintf(fp,"TOP 5\n");
+    
+    fprintf(fp, "+------+--------+--------+\n");
+    fprintf(fp, "|        TOP  5          |\n");
+    fprintf(fp, "+------+--------+--------+\n");
+    fprintf(fp, "| Rank |   ID   | Points |\n");
+    fprintf(fp, "+------+--------+--------+\n");
+
     pthread_mutex_lock(&sessions_mutex);
     
     typedef struct { int id; int points; } top_entry_t;
-    top_entry_t entries[num_active_sessions];
-    
-    for (int i = 0; i < num_active_sessions; i++) {
-        entries[i].id = active_sessions[i].client_id;
-        entries[i].points = 0;
-        if (active_sessions[i].board && active_sessions[i].board->pacmans) {
-            entries[i].points = active_sessions[i].board->pacmans[0].points;
+    int count = num_active_sessions;
+    top_entry_t *entries = NULL;
+    if (count > 0) {
+        entries = malloc(count * sizeof(top_entry_t));
+    }
+    if (entries) {
+        for (int i = 0; i < count; i++) {
+            entries[i].id = active_sessions[i].client_id;
+            entries[i].points = 0;
+            session_t *sess = active_sessions[i].session;
+            if (sess && sess->board) {
+                // Must lock the board to safely read pacman pointer and points
+                // otherwise a worker performing unload_level/load_level causes segfault
+                pthread_rwlock_rdlock(&sess->board->state_lock);
+                if (sess->board->pacmans != NULL) {
+                    entries[i].points = sess->board->pacmans[0].points;
+                }
+                pthread_rwlock_unlock(&sess->board->state_lock);
+            }
         }
     }
 
     // Bubble sort
-    for (int i = 0; i < num_active_sessions - 1; i++) {
-        for (int j = 0; j < num_active_sessions - i - 1; j++) {
+    for (int i = 0; i < count - 1; i++) {
+        for (int j = 0; j < count - i - 1; j++) {
             if (entries[j].points < entries[j+1].points) {
                 top_entry_t temp = entries[j];
                 entries[j] = entries[j+1];
@@ -222,12 +240,18 @@ void create_top5(){
     pthread_mutex_unlock(&sessions_mutex);
     
     // Escrever top 5
-    for (int i = 0; i < num_active_sessions && i < 5; i++) {
-        fprintf(fp, "%d. ID: %d | Pontos: %d\n", i+1, entries[i].id, entries[i].points);
+    for (int i = 0; i < 5; i++) {
+        if (entries && i < count) {
+            fprintf(fp, "|  #%d  | %-6d | %-6d |\n", i+1, entries[i].id, entries[i].points);
+        } else {
+            fprintf(fp, "|  #%d  |        |        |\n", i+1);
+        }
     }
-    
- 
+    fprintf(fp, "+------+--------+--------+\n");
+
+    if (entries) free(entries);
     fclose(fp);
+    printf("Top 5 board updated\n");
 }
 
 void* session_worker(void* arg) {
