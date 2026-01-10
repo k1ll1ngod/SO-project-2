@@ -66,11 +66,23 @@ ssize_t read_exact(int fd, void *buf, size_t n) {
 }
 
 int extractIdFromPipe (const char *pipe_path) {
-  const char *last_underscore = strrchr(pipe_path, '_');
-  if (last_underscore) {
-      return atoi(last_underscore + 1);
-  }
-  return -1;
+    int id = -1;
+      const char *last_underscore = strrchr(pipe_path, '_');
+      if (last_underscore) {
+          id = atoi(last_underscore + 1);
+      }
+      // Fallback: If ID is invalid (0 or -1), try to find ANY number in the string
+      if (id <= 0) {
+          const char *p = pipe_path;
+          while (*p) {
+              if (*p >= '0' && *p <= '9') {
+                  id = atoi(p);
+                  break;
+              }
+              p++;
+          }
+      }
+      return id;
 }
 
 void* ClientSessionThread(void *arg){
@@ -179,10 +191,12 @@ void add_session(session_t *session, int client_id){
     }
     pthread_mutex_unlock(&sessions_mutex);
 }
-void remove_session(int client_id){
+
+void remove_session(session_t *session_ptr){
     pthread_mutex_lock(&sessions_mutex);
     for(int i=0; i<num_active_sessions;i++){
-        if (active_sessions[i].client_id == client_id) {
+        // Compare memory address, not ID, to avoid collisions when ID=0
+        if (active_sessions[i].session == session_ptr) {
             active_sessions[i] = active_sessions[num_active_sessions - 1];
             num_active_sessions--;
             break;
@@ -194,40 +208,69 @@ void remove_session(int client_id){
 void create_top5(){
     FILE *fp = fopen("Top_5.txt","w");
     if(!fp)return;
-    fprintf(fp,"TOP 5\n");
+
+    // Header styling
+    fprintf(fp, "+------+--------+--------+\n");
+    fprintf(fp, "|        TOP  5          |\n");
+    fprintf(fp, "+------+--------+--------+\n");
+    fprintf(fp, "| Rank |   ID   | Points |\n");
+    fprintf(fp, "+------+--------+--------+\n");
+
     pthread_mutex_lock(&sessions_mutex);
     
     typedef struct { int id; int points; } top_entry_t;
-    top_entry_t entries[num_active_sessions];
     
-    for (int i = 0; i < num_active_sessions; i++) {
-        entries[i].id = active_sessions[i].client_id;
-        entries[i].points = 0;
-        if (active_sessions[i].board && active_sessions[i].board->pacmans) {
-            entries[i].points = active_sessions[i].board->pacmans[0].points;
-        }
+    // Safer allocation than VLA for variable sizes
+    int count = num_active_sessions;
+    top_entry_t *entries = NULL;
+    if (count > 0) {
+        entries = malloc(count * sizeof(top_entry_t));
     }
+    
+    if (entries) {
+        for (int i = 0; i < count; i++) {
+            entries[i].id = active_sessions[i].client_id;
+            entries[i].points = 0;
+            
+            session_t *sess = active_sessions[i].session;
+            if (sess && sess->board) {
+                // Must lock the board to safely read pacman pointer and points
+                // otherwise a worker performing unload_level/load_level causes segfault
+                pthread_rwlock_rdlock(&sess->board->state_lock);
+                if (sess->board->pacmans != NULL) {
+                    entries[i].points = sess->board->pacmans[0].points;
+                }
+                pthread_rwlock_unlock(&sess->board->state_lock);
+            }
+        }
 
-    // Bubble sort
-    for (int i = 0; i < num_active_sessions - 1; i++) {
-        for (int j = 0; j < num_active_sessions - i - 1; j++) {
-            if (entries[j].points < entries[j+1].points) {
-                top_entry_t temp = entries[j];
-                entries[j] = entries[j+1];
-                entries[j+1] = temp;
+        // Bubble sort descending
+        for (int i = 0; i < count - 1; i++) {
+            for (int j = 0; j < count - i - 1; j++) {
+                if (entries[j].points < entries[j+1].points) {
+                    top_entry_t temp = entries[j];
+                    entries[j] = entries[j+1];
+                    entries[j+1] = temp;
+                }
             }
         }
     }
-
     pthread_mutex_unlock(&sessions_mutex);
-    
-    // Escrever top 5
-    for (int i = 0; i < num_active_sessions && i < 5; i++) {
-        fprintf(fp, "%d. ID: %d | Pontos: %d\n", i+1, entries[i].id, entries[i].points);
+
+    // Write Top 5 Table (Always 5 rows)
+    for (int i = 0; i < 5; i++) {
+        if (entries && i < count) {
+            fprintf(fp, "|  #%d  | %-6d | %-6d |\n", i+1, entries[i].id, entries[i].points);
+        } else {
+            fprintf(fp, "|  #%d  |        |        |\n", i+1);
+        }
     }
-    
- 
+
+    fprintf(fp, "+------+--------+--------+\n");
+
+    if (entries) free(entries);
     fclose(fp);
+    printf("Top 5 board updated\n");
 }
 
 void* session_worker(void* arg) {
@@ -259,6 +302,7 @@ void* session_worker(void* arg) {
         session.active = 1;
 
         int client_id = extractIdFromPipe(req.req_pipe);
+
         session.client_id = client_id;
 
         // 3. Connect to Client
@@ -394,7 +438,7 @@ void* session_worker(void* arg) {
         session.active = 0;
         pthread_cancel(session_thd); 
         pthread_join(session_thd, NULL);
-        remove_session(client_id);
+        remove_session(&session);
 
         close(session.notif_fd);
         close(session.req_fd);
@@ -416,14 +460,14 @@ int main(int argc, char** argv) {
     int max_games = atoi(argv[2]);
     char *server_fifo = argv[3];
 
-    active_sessions = malloc(max_games * sizeof(session_t));
+    active_sessions = malloc(max_games * sizeof(session_entry_t));
     max_sessions=max_games;
     if (!active_sessions) {
         perror("malloc failed");
         return -1;
     }
     
-    memset(active_sessions, 0, max_games * sizeof(session_t));
+    memset(active_sessions, 0, max_games * sizeof(session_entry_t));
 
 
     srand((unsigned int)time(NULL));
@@ -451,11 +495,17 @@ int main(int argc, char** argv) {
     printf("Server listening on %s with %d worker threads.\n", server_fifo, max_games);
 
 
-    while(1){
-        if(sigurs1_received){
-            sigurs1_received=0;
+    while (1) {
+        if (sigurs1_received) {
+            sigurs1_received = 0;
             create_top5();
         }
+
+        if (server_id == -1) {
+            server_id = open(server_fifo, O_RDONLY);
+            if (server_id == -1) continue;
+        }
+        
         char buffer[81];
         ssize_t n = read(server_id, buffer, 81);
         if(n<=0){
