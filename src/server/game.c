@@ -29,6 +29,7 @@
  *  - NEXT_LEVEL: Pacman reached a portal
  *  - QUIT_GAME: Pacman died or session ended
  */
+
 void* pacman_thread(void *arg) {
     session_t *session= arg;
     board_t *board = session->board;
